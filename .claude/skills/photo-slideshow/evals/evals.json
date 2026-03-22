@@ -1,0 +1,73 @@
+{
+  "skill_name": "photo-slideshow",
+  "evals": [
+    {
+      "id": 0,
+      "prompt": "Create a slideshow video from the photos in /Users/samli/dev/photo-slideshow-skill/test_photos. Save it to /Users/samli/dev/photo-slideshow-skill/photo-slideshow-workspace/iteration-1/eval-0/output/slideshow.mp4",
+      "expected_output": "A working 4K MP4 video file containing all 12 photos, each centred on a warm white matt background with even padding, displayed for 5 seconds each with crossfade transitions.",
+      "files": [],
+      "assertions": [
+        {
+          "text": "An MP4 file is produced at the specified output path",
+          "check": "file_exists"
+        },
+        {
+          "text": "The output file is a valid video (non-zero file size > 1MB)",
+          "check": "file_size_gt_1mb"
+        },
+        {
+          "text": "The script processes all 12 test photos (output duration ≥ 55 seconds)",
+          "check": "qualitative"
+        },
+        {
+          "text": "Dependencies (FFmpeg, Pillow) are checked before running",
+          "check": "qualitative"
+        }
+      ]
+    },
+    {
+      "id": 1,
+      "prompt": "Make a slideshow from my photos at /Users/samli/dev/photo-slideshow-skill/test_photos — I want a light grey background instead of white, and 8 seconds per photo. Output to /Users/samli/dev/photo-slideshow-skill/photo-slideshow-workspace/iteration-1/eval-1/output/grey-slideshow.mp4",
+      "expected_output": "A working MP4 video with a light grey matt (#E8E8E8 or similar), 8-second slides, and all photos properly oriented and centred.",
+      "files": [],
+      "assertions": [
+        {
+          "text": "An MP4 file is produced at the specified output path",
+          "check": "file_exists"
+        },
+        {
+          "text": "The script uses a grey matt colour (not the default warm white) — visible in the MATT_COLOUR config",
+          "check": "qualitative"
+        },
+        {
+          "text": "SLIDE_SECS is set to 8.0 in the generated script",
+          "check": "qualitative"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "Quick 1080p preview slideshow from /Users/samli/dev/photo-slideshow-skill/test_photos, 3 seconds per photo, no crossfade. Save to /Users/samli/dev/photo-slideshow-skill/photo-slideshow-workspace/iteration-1/eval-2/output/preview.mp4",
+      "expected_output": "A 1920×1080 MP4 video with 3-second hard-cut slides and default warm white matt.",
+      "files": [],
+      "assertions": [
+        {
+          "text": "An MP4 file is produced at the specified output path",
+          "check": "file_exists"
+        },
+        {
+          "text": "FRAME_W=1920 and FRAME_H=1080 are set in the generated script",
+          "check": "qualitative"
+        },
+        {
+          "text": "FADE_SECS=0 (hard cut, no crossfade) is set in the generated script",
+          "check": "qualitative"
+        },
+        {
+          "text": "SLIDE_SECS=3.0 is set in the generated script",
+          "check": "qualitative"
+        }
+      ]
+    }
+  ]
+}
