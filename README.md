@@ -20,23 +20,28 @@ A [Claude Code](https://claude.ai/claude-code) skill that turns a folder of phot
 
 ## Installation
 
-### Option 1 — Install the packaged skill file
+### Option 1 — Install via plugin marketplace (recommended)
 
-Download `photo-slideshow.skill` from the [Releases](https://github.com/hingyeung/photo-slideshow-skill/releases) page, then run:
+Add this repo as a marketplace in Claude Code:
 
-```bash
-claude skill install photo-slideshow.skill
+```
+/plugin marketplace add hingyeung/photo-slideshow-skill
+```
+
+Then install the plugin:
+
+```
+/plugin install photo-slideshow@photo-slideshow-skill
 ```
 
 ### Option 2 — Install from source
 
-Clone this repo and point Claude Code at the skill directory:
+Clone this repo and copy the skill into your project or user skills directory:
 
 ```bash
 git clone https://github.com/hingyeung/photo-slideshow-skill.git
+cp -r photo-slideshow-skill/skills/photo-slideshow ~/.claude/skills/
 ```
-
-Then add the skill path to your Claude Code settings, or copy `.claude/skills/photo-slideshow/` into your project's `.claude/skills/` directory.
 
 ## Usage
 
