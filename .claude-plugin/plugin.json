@@ -1,0 +1,12 @@
+{
+  "name": "photo-slideshow",
+  "version": "1.0.0",
+  "description": "Creates a photography slideshow video from a folder of photos. Use when the user wants to make a slideshow, photo video, or turn a folder of photos into a video.",
+  "author": {
+    "name": "Sam Li"
+  },
+  "repository": "https://github.com/hingyeung/photo-slideshow-skill",
+  "homepage": "https://github.com/hingyeung/photo-slideshow-skill",
+  "license": "MIT",
+  "keywords": ["photos", "slideshow", "video", "ffmpeg", "photography"]
+}

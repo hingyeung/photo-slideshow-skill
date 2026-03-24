@@ -1,0 +1,21 @@
+{
+  "name": "photo-slideshow-skill",
+  "description": "A Claude Code plugin that turns a folder of photos into a polished 4K video slideshow",
+  "owner": {
+    "name": "Sam Li"
+  },
+  "plugins": [
+    {
+      "name": "photo-slideshow",
+      "source": "./",
+      "description": "Creates a photography slideshow video from a folder of photos with gallery-style matt background, smooth crossfades, and 4K H.265 output.",
+      "version": "1.0.0",
+      "author": {
+        "name": "Sam Li"
+      },
+      "homepage": "https://github.com/hingyeung/photo-slideshow-skill",
+      "repository": "https://github.com/hingyeung/photo-slideshow-skill",
+      "license": "MIT"
+    }
+  ]
+}
