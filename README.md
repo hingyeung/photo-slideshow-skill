@@ -2,6 +2,8 @@
 
 A [Claude Code](https://claude.ai/claude-code) skill that turns a folder of photos into a polished 4K video slideshow — with a gallery-style matt background, smooth crossfade transitions, and full customisation via plain language.
 
+![Photo Slideshow Skill in action](docs/screenshot.png)
+
 ## What it does
 
 - Takes a folder of photos (JPEG, PNG, HEIC, TIFF, WebP)
