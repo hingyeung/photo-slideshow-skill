@@ -18,6 +18,7 @@ This skill produces a 4K MP4 video from a folder of photos. Each photo is displa
 | Resolution | 3840×2160 (4K UHD) | |
 | Encoding | H.265 (HEVC), CRF 18 | High quality, small file; use CRF 22–28 to reduce size |
 | Frame rate | 30 fps | |
+| Sort order | EXIF creation date (oldest first) | Photos without a timestamp appear at the end |
 
 The photo is always shown at its natural aspect ratio — never cropped or stretched.
 
@@ -47,11 +48,13 @@ slideshow-env/bin/pip install -q Pillow pillow-heif
 
 ### Step 3: Generate and run the script
 
-Write `generate_slideshow.py` (see template below) with the user's settings filled in, then run it via the venv:
+Write `slideshow-env/generate_slideshow.py` (see template below) with the user's settings filled in, then run it via the venv:
 
 ```bash
-slideshow-env/bin/python generate_slideshow.py
+slideshow-env/bin/python slideshow-env/generate_slideshow.py
 ```
+
+Placing the script inside `slideshow-env/` keeps the user's working directory clean and prevents it being accidentally committed.
 
 ### Step 4: Report result
 
@@ -61,7 +64,7 @@ Confirm the output file path and total duration (number of photos × slide durat
 
 ## Script template
 
-Write this as `generate_slideshow.py` in the project directory, with the configuration values filled in:
+Write this as `slideshow-env/generate_slideshow.py`, with the configuration values filled in:
 
 ```python
 #!/usr/bin/env python3
@@ -75,6 +78,7 @@ import subprocess
 import tempfile
 import shutil
 from pathlib import Path
+from datetime import datetime
 from PIL import Image, ImageOps
 
 # ── HEIC support (installed into venv via pip install pillow-heif) ─────────────
@@ -94,18 +98,56 @@ PADDING      = 0.10                # fraction of frame for padding on each side 
 SLIDE_SECS   = 5.0                 # seconds per slide
 FADE_SECS    = 0.5                 # crossfade duration (0 = hard cut)
 FPS          = 30
+SORT_BY      = "date"              # "date" = EXIF creation date (oldest first); "filename" = alphabetical
 # ───────────────────────────────────────────────────────────────────────────────
 
 SUPPORTED = {'.jpg', '.jpeg', '.png', '.heic', '.heif', '.tiff', '.tif', '.webp'}
 
 
+def get_photo_date(path: Path):
+    """Extract EXIF DateTimeOriginal from a photo, or None if unavailable."""
+    try:
+        img = Image.open(path)
+        exif = img.getexif()
+        # Try DateTimeOriginal (tag 36867) first, fall back to DateTime (tag 306)
+        date_str = exif.get(36867) or exif.get(306)
+        if date_str:
+            return datetime.strptime(date_str, "%Y:%m:%d %H:%M:%S")
+    except Exception:
+        pass
+    return None
+
+
 def get_photos(directory: str) -> list[Path]:
-    """Return sorted list of photo paths from the directory."""
-    return sorted(
-        [p for p in Path(directory).iterdir()
-         if p.suffix.lower() in SUPPORTED and not p.name.startswith('.')],
-        key=lambda p: p.name
-    )
+    """Return photos sorted by EXIF creation date (oldest first) or by filename.
+    When sorting by date, photos without a creation timestamp are placed at the end.
+    """
+    all_photos = [
+        p for p in Path(directory).iterdir()
+        if p.suffix.lower() in SUPPORTED and not p.name.startswith('.')
+    ]
+
+    if SORT_BY == "filename":
+        return sorted(all_photos, key=lambda p: p.name)
+
+    dated = []
+    undated = []
+    for p in all_photos:
+        dt = get_photo_date(p)
+        if dt:
+            dated.append((dt, p))
+        else:
+            undated.append(p)
+
+    dated.sort(key=lambda x: x[0])
+    undated.sort(key=lambda x: x.name)
+
+    if undated:
+        print(f"  ⚠ {len(undated)} photo(s) have no EXIF creation date and will appear at the end:")
+        for p in undated:
+            print(f"    - {p.name}")
+
+    return [p for _, p in dated] + undated
 
 
 def load_photo(path: Path) -> Image.Image:
@@ -220,8 +262,8 @@ if __name__ == "__main__":
 | "1080p output" | `FRAME_W = 1920`, `FRAME_H = 1080` |
 | "No fade / hard cut" | `FADE_SECS = 0` |
 | "Slower fade" | `FADE_SECS = 1.0` |
-| "Sort by date taken" | Sort `get_photos()` by EXIF DateTimeOriginal instead of filename |
-| "Include only landscape photos" | Filter in `get_photos()`: keep only photos where `width > height` after EXIF transpose |
+| "Sort by filename" | `SORT_BY = "filename"` |
+| "Include only landscape photos" | Filter in `get_photos()`: keep only photos where `width > height` after EXIF transpose (not yet implemented) |
 
 ## Common issues
 
@@ -234,3 +276,5 @@ if __name__ == "__main__":
 **Video file is very large** — increase CRF to 22–28, or switch to H.264 (`libx264`) for slightly larger but more widely compatible files.
 
 **Script is slow on many photos** — the JPEG temp-file approach is already efficient. For 100+ photos, consider reducing frame resolution during testing.
+
+**Some photos have no creation date** — The script warns about these and places them at the end of the slideshow. To add EXIF dates, use a photo editor or `exiftool`. Alternatively, switch to filename sorting with `SORT_BY = "filename"`.

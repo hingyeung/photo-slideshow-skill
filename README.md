@@ -75,17 +75,30 @@ You can ask for changes in plain language at any time:
 | "No fade / hard cut" | Crossfade disabled |
 | "1080p output" | Resolution → 1920×1080 |
 | "More breathing room" | Padding → 15% |
-| "Sort by date taken" | Photos sorted by EXIF date |
+| "Sort by filename" | Photos sorted alphabetically instead of by date |
 
 ## Output
 
 The skill produces:
 
-- `generate_slideshow.py` — the rendering script (keep this to re-run or tweak)
-- `slideshow-env/` — isolated Python virtual environment
+- `slideshow-env/` — isolated Python virtual environment, also contains `generate_slideshow.py`
 - `slideshow.mp4` (or your specified filename) — the final video
 
+The rendering script lives inside `slideshow-env/` to keep your working directory clean and avoid it being accidentally committed.
+
 The MP4 is encoded as H.265 (HEVC) at CRF 18 with `+faststart` for streaming. For wider compatibility (older TVs, Windows), ask for H.264 instead.
+
+## Development
+
+The skill definition lives in `skills/photo-slideshow/SKILL.md`. Evals are at `skills/photo-slideshow/evals/evals.json`.
+
+To test the skill locally using Claude Code's eval runner, the skill must also be discoverable at `.claude/skills/photo-slideshow/`. Create a symlink after cloning:
+
+```bash
+ln -s ../../skills/photo-slideshow .claude/skills/photo-slideshow
+```
+
+The `.claude/skills/` directory is gitignored, so the symlink is local only.
 
 ## Licence
 

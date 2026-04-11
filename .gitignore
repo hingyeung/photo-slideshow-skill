@@ -6,6 +6,7 @@
 .claude/settings.local.json
 .claude/debug/
 .claude/projects/
+.claude/skills/
 
 # Unrelated bundled skills
 .claude/skills/playwright-cli/
