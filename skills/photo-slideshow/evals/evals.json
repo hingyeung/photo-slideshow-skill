@@ -68,6 +68,26 @@
           "check": "qualitative"
         }
       ]
+    },
+    {
+      "id": 3,
+      "prompt": "Create a slideshow from /Users/samli/dev/photo-slideshow-skill/test_photos with background music from /Users/samli/dev/photo-slideshow-skill/test_audio/track.mp3. Save to /Users/samli/dev/photo-slideshow-skill/photo-slideshow-workspace/iteration-1/eval-3/output/slideshow-with-audio.mp4",
+      "expected_output": "A 4K MP4 video with all photos and the MP3 file looped as background audio, trimmed to match the video duration.",
+      "files": [],
+      "assertions": [
+        {
+          "text": "An MP4 file is produced at the specified output path",
+          "check": "file_exists"
+        },
+        {
+          "text": "AUDIO_FILES contains the provided MP3 path in the generated script",
+          "check": "qualitative"
+        },
+        {
+          "text": "The generated script uses ffprobe to get audio duration and builds an audio concat+trim filter",
+          "check": "qualitative"
+        }
+      ]
     }
   ]
 }

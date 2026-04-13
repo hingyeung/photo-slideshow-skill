@@ -19,6 +19,7 @@ This skill produces a 4K MP4 video from a folder of photos. Each photo is displa
 | Encoding | H.265 (HEVC), CRF 18 | High quality, small file; use CRF 22–28 to reduce size |
 | Frame rate | 30 fps | |
 | Sort order | EXIF creation date (oldest first) | Photos without a timestamp appear at the end |
+| Audio | _(none — silent)_ | List of MP3 paths; audio is concatenated and looped/trimmed to match video duration |
 
 The photo is always shown at its natural aspect ratio — never cropped or stretched.
 
@@ -29,7 +30,8 @@ The photo is always shown at its natural aspect ratio — never cropped or stret
 Ask the user (or infer from context) for:
 - **Photo folder path** — required
 - **Output file path** — default: `slideshow.mp4` in the same directory as the photos
-- **Any style overrides** — matt colour, timing, resolution, transitions, music
+- **Any style overrides** — matt colour, timing, resolution, transitions
+- **Audio files** — list of MP3 paths (optional). If omitted, video is silent.
 
 ### Step 2: Check FFmpeg and set up venv
 
@@ -72,6 +74,7 @@ Write this as `slideshow-env/generate_slideshow.py`, with the configuration valu
 Produces a 4K MP4 with each photo centred on a gallery matt.
 """
 
+import math
 import os
 import sys
 import subprocess
@@ -99,6 +102,7 @@ SLIDE_SECS   = 5.0                 # seconds per slide
 FADE_SECS    = 0.5                 # crossfade duration (0 = hard cut)
 FPS          = 30
 SORT_BY      = "date"              # "date" = EXIF creation date (oldest first); "filename" = alphabetical
+AUDIO_FILES  = []                  # list of MP3 paths — leave empty for silent video
 # ───────────────────────────────────────────────────────────────────────────────
 
 SUPPORTED = {'.jpg', '.jpeg', '.png', '.heic', '.heif', '.tiff', '.tif', '.webp'}
@@ -177,37 +181,80 @@ def make_frame(photo_path: Path) -> Image.Image:
     return canvas
 
 
-def build_ffmpeg_cmd(slide_paths: list[Path], output: str) -> list[str]:
-    """Build FFmpeg command. Uses concat (hard cut) when FADE_SECS=0, xfade otherwise."""
+def get_audio_duration_secs(path: Path) -> float:
+    """Return duration of an audio file in seconds using ffprobe."""
+    result = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+         "-of", "default=noprint_wrappers=1:nokey=1", str(path)],
+        capture_output=True, text=True
+    )
+    return float(result.stdout.strip())
+
+
+def build_ffmpeg_cmd(slide_paths: list[Path], output: str, total_video_secs: float) -> list[str]:
+    """Build FFmpeg command. Uses concat (hard cut) when FADE_SECS=0, xfade otherwise.
+    If AUDIO_FILES is set, concatenates and loops audio to match video duration."""
     cmd = ["ffmpeg", "-y"]
     n = len(slide_paths)
 
     for p in slide_paths:
         cmd += ["-loop", "1", "-t", str(SLIDE_SECS), "-i", str(p)]
 
+    # Actual video duration is shorter than n*SLIDE_SECS when xfade overlaps are applied
+    if FADE_SECS > 0 and n > 1:
+        actual_video_secs = round(n * SLIDE_SECS - (n - 1) * FADE_SECS, 3)
+    else:
+        actual_video_secs = total_video_secs
+
+    # --- Audio inputs ---
+    audio_inputs = []
+    audio_filter = None
+    if AUDIO_FILES:
+        total_audio_secs = sum(get_audio_duration_secs(Path(f)) for f in AUDIO_FILES)
+        # Repeat the playlist enough times to exceed actual video duration, then trim
+        loop_count = math.ceil(actual_video_secs / total_audio_secs) + 1
+        repeated_audio = list(AUDIO_FILES) * loop_count
+        for f in repeated_audio:
+            audio_inputs += ["-i", str(f)]
+        n_audio = len(repeated_audio)
+        # Audio inputs start after all video inputs (index n)
+        audio_map_str = "".join(f"[{n + i}:a]" for i in range(n_audio))
+        audio_filter = (
+            f"{audio_map_str}concat=n={n_audio}:v=0:a=1[concat_audio];"
+            f"[concat_audio]atrim=duration={actual_video_secs},asetpts=PTS-STARTPTS[aout]"
+        )
+
+    cmd += audio_inputs
+
+    # --- Encoding flags ---
     encode_flags = [
         "-vcodec", "libx265", "-crf", "18", "-preset", "medium",
-        "-pix_fmt", "yuv420p", "-movflags", "+faststart", output
+        "-pix_fmt", "yuv420p", "-dn", "-map_chapters", "-1",
     ]
+    if audio_filter:
+        encode_flags += ["-map", "[vout]", "-map", "[aout]", "-acodec", "aac", "-b:a", "192k"]
+    else:
+        encode_flags += ["-map", "[vout]"]
+    encode_flags += ["-movflags", "+faststart", output]
 
     if n == 1 or FADE_SECS == 0:
         # Hard cut: use concat filter
-        filter_str = f"concat=n={n}:v=1:a=0[vout]"
-        cmd += ["-filter_complex", filter_str, "-map", "[vout]"] + encode_flags
-        return cmd
+        video_filter = f"concat=n={n}:v=1:a=0[vout]"
+    else:
+        # Crossfade: build xfade filter chain
+        filter_parts = []
+        last_label = "[0:v]"
+        for i in range(1, n):
+            offset = round(SLIDE_SECS * i - FADE_SECS * i, 3)
+            out_label = f"[v{i}]" if i < n - 1 else "[vout]"
+            filter_parts.append(
+                f"{last_label}[{i}:v]xfade=transition=fade:duration={FADE_SECS}:offset={offset}{out_label}"
+            )
+            last_label = f"[v{i}]"
+        video_filter = ";".join(filter_parts)
 
-    # Crossfade: build xfade filter chain
-    filter_parts = []
-    last_label = "[0:v]"
-    for i in range(1, n):
-        offset = round(SLIDE_SECS * i - FADE_SECS * i, 3)
-        out_label = f"[v{i}]" if i < n - 1 else "[vout]"
-        filter_parts.append(
-            f"{last_label}[{i}:v]xfade=transition=fade:duration={FADE_SECS}:offset={offset}{out_label}"
-        )
-        last_label = f"[v{i}]"
-
-    cmd += ["-filter_complex", ";".join(filter_parts), "-map", "[vout]"] + encode_flags
+    full_filter = video_filter if not audio_filter else video_filter + ";" + audio_filter
+    cmd += ["-filter_complex", full_filter] + encode_flags
     return cmd
 
 
@@ -218,8 +265,8 @@ def main():
         sys.exit(1)
 
     print(f"Found {len(photos)} photo(s) → {OUTPUT_FILE}")
-    total_secs = len(photos) * SLIDE_SECS
-    print(f"Duration: {total_secs:.0f}s  |  Resolution: {FRAME_W}×{FRAME_H}  |  Matt: #{MATT_COLOUR[0]:02X}{MATT_COLOUR[1]:02X}{MATT_COLOUR[2]:02X}")
+    total_video_secs = len(photos) * SLIDE_SECS
+    print(f"Duration: {total_video_secs:.0f}s  |  Resolution: {FRAME_W}×{FRAME_H}  |  Matt: #{MATT_COLOUR[0]:02X}{MATT_COLOUR[1]:02X}{MATT_COLOUR[2]:02X}")
 
     tmpdir = tempfile.mkdtemp(prefix="slideshow_")
     try:
@@ -232,7 +279,7 @@ def main():
             slide_paths.append(slide_path)
 
         print("Encoding video …")
-        cmd = build_ffmpeg_cmd(slide_paths, OUTPUT_FILE)
+        cmd = build_ffmpeg_cmd(slide_paths, OUTPUT_FILE, total_video_secs)
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
             print("FFmpeg error:", result.stderr[-2000:], file=sys.stderr)
@@ -264,6 +311,8 @@ if __name__ == "__main__":
 | "Slower fade" | `FADE_SECS = 1.0` |
 | "Sort by filename" | `SORT_BY = "filename"` |
 | "Include only landscape photos" | Filter in `get_photos()`: keep only photos where `width > height` after EXIF transpose (not yet implemented) |
+| "Add background music" | `AUDIO_FILES = ["/path/to/track1.mp3", "/path/to/track2.mp3"]` |
+| "No music / silent video" | `AUDIO_FILES = []` |
 
 ## Common issues
 
@@ -278,3 +327,7 @@ if __name__ == "__main__":
 **Script is slow on many photos** — the JPEG temp-file approach is already efficient. For 100+ photos, consider reducing frame resolution during testing.
 
 **Some photos have no creation date** — The script warns about these and places them at the end of the slideshow. To add EXIF dates, use a photo editor or `exiftool`. Alternatively, switch to filename sorting with `SORT_BY = "filename"`.
+
+**Audio missing from output** — Ensure all paths in `AUDIO_FILES` exist before running; `ffprobe` will error on a missing file.
+
+**Unsupported audio format** — The skill expects MP3. For AAC, WAV, or FLAC files, either ask the user to convert to MP3 first, or adjust the AUDIO_FILES entries accordingly (FFmpeg can decode most formats without code changes).
