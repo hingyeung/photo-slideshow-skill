@@ -11,6 +11,7 @@ A [Claude Code](https://claude.ai/claude-code) skill that turns a folder of phot
 - Renders a 4K H.265 MP4 you can play on any TV, phone, or computer
 - Handles EXIF orientation automatically (no sideways photos)
 - Installs Python dependencies in an isolated virtual environment — no system Python pollution
+- Uses Apple Silicon hardware encoding (`hevc_videotoolbox`) automatically for ~2-3x faster video generation; falls back to software `libx265` on other platforms
 
 **Default style:** warm white matt (`#F5F5F0`), 10% padding, 5-second slides, 0.5-second crossfade, 3840×2160 (4K UHD), H.265.
 
@@ -86,7 +87,7 @@ The skill produces:
 
 The rendering script lives inside `slideshow-env/` to keep your working directory clean and avoid it being accidentally committed.
 
-The MP4 is encoded as H.265 (HEVC) at CRF 18 with `+faststart` for streaming. For wider compatibility (older TVs, Windows), ask for H.264 instead.
+The MP4 is encoded as H.265 (HEVC) with `+faststart` for streaming. On Apple Silicon, the hardware `hevc_videotoolbox` encoder is used automatically (CRF equivalent quality, ~2-3x faster than software). On other platforms, `libx265` at CRF 18 is used. For wider compatibility (older TVs, Windows), ask for H.264 instead.
 
 ## Development
 
