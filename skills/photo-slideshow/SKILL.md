@@ -16,7 +16,7 @@ This skill produces a 4K MP4 video from a folder of photos. Each photo is displa
 | Duration per slide | 5 seconds | |
 | Transition | 0.5s crossfade | `0` = hard cut |
 | Resolution | 3840×2160 (4K UHD) | |
-| Encoding | H.265 (HEVC), CRF 18 | High quality, small file; use CRF 22–28 to reduce size |
+| Encoding | H.265 (HEVC) via hardware if available | Uses `hevc_videotoolbox` on Apple Silicon for ~2-3× speedup; falls back to `libx265` elsewhere |
 | Frame rate | 30 fps | |
 | Sort order | EXIF creation date (oldest first) | Photos without a timestamp appear at the end |
 | Audio | _(none — silent)_ | List of MP3 paths; audio is concatenated and looped/trimmed to match video duration |
@@ -181,6 +181,15 @@ def make_frame(photo_path: Path) -> Image.Image:
     return canvas
 
 
+def _detect_hw_encoder() -> str:
+    """Return 'hevc_videotoolbox' if Apple Silicon HW encoder is available, else 'libx265'."""
+    result = subprocess.run(
+        ["ffmpeg", "-hide_banner", "-encoders"],
+        capture_output=True, text=True
+    )
+    return "hevc_videotoolbox" if "hevc_videotoolbox" in result.stdout else "libx265"
+
+
 def get_audio_duration_secs(path: Path) -> float:
     """Return duration of an audio file in seconds using ffprobe."""
     result = subprocess.run(
@@ -191,7 +200,7 @@ def get_audio_duration_secs(path: Path) -> float:
     return float(result.stdout.strip())
 
 
-def build_ffmpeg_cmd(slide_paths: list[Path], output: str, total_video_secs: float) -> list[str]:
+def build_ffmpeg_cmd(slide_paths: list[Path], output: str, total_video_secs: float, encoder: str = "") -> list[str]:
     """Build FFmpeg command. Uses concat (hard cut) when FADE_SECS=0, xfade otherwise.
     If AUDIO_FILES is set, concatenates and loops audio to match video duration."""
     cmd = ["ffmpeg", "-y"]
@@ -227,10 +236,19 @@ def build_ffmpeg_cmd(slide_paths: list[Path], output: str, total_video_secs: flo
     cmd += audio_inputs
 
     # --- Encoding flags ---
-    encode_flags = [
-        "-vcodec", "libx265", "-crf", "18", "-preset", "medium",
-        "-pix_fmt", "yuv420p", "-dn", "-map_chapters", "-1",
-    ]
+    if not encoder:
+        encoder = _detect_hw_encoder()
+    if encoder == "hevc_videotoolbox":
+        # Apple Silicon hardware encoder — ~2-3× faster than libx265; no -preset support
+        encode_flags = [
+            "-vcodec", "hevc_videotoolbox", "-q:v", "65", "-tag:v", "hvc1",
+            "-pix_fmt", "yuv420p", "-dn", "-map_chapters", "-1",
+        ]
+    else:
+        encode_flags = [
+            "-vcodec", "libx265", "-crf", "18", "-preset", "medium",
+            "-pix_fmt", "yuv420p", "-dn", "-map_chapters", "-1",
+        ]
     if audio_filter:
         encode_flags += ["-map", "[vout]", "-map", "[aout]", "-acodec", "aac", "-b:a", "192k"]
     else:
@@ -264,9 +282,10 @@ def main():
         print(f"No supported photos found in: {PHOTO_DIR}", file=sys.stderr)
         sys.exit(1)
 
+    encoder = _detect_hw_encoder()
     print(f"Found {len(photos)} photo(s) → {OUTPUT_FILE}")
     total_video_secs = len(photos) * SLIDE_SECS
-    print(f"Duration: {total_video_secs:.0f}s  |  Resolution: {FRAME_W}×{FRAME_H}  |  Matt: #{MATT_COLOUR[0]:02X}{MATT_COLOUR[1]:02X}{MATT_COLOUR[2]:02X}")
+    print(f"Duration: {total_video_secs:.0f}s  |  Resolution: {FRAME_W}×{FRAME_H}  |  Matt: #{MATT_COLOUR[0]:02X}{MATT_COLOUR[1]:02X}{MATT_COLOUR[2]:02X}  |  Encoder: {encoder}")
 
     tmpdir = tempfile.mkdtemp(prefix="slideshow_")
     try:
@@ -279,7 +298,7 @@ def main():
             slide_paths.append(slide_path)
 
         print("Encoding video …")
-        cmd = build_ffmpeg_cmd(slide_paths, OUTPUT_FILE, total_video_secs)
+        cmd = build_ffmpeg_cmd(slide_paths, OUTPUT_FILE, total_video_secs, encoder)
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
             print("FFmpeg error:", result.stderr[-2000:], file=sys.stderr)
@@ -307,6 +326,7 @@ if __name__ == "__main__":
 | "More border / more breathing room" | `PADDING = 0.15` |
 | "Less border / photos feel larger" | `PADDING = 0.04` |
 | "1080p output" | `FRAME_W = 1920`, `FRAME_H = 1080` |
+| "Force CPU encoding / smaller file" | Pass `encoder="libx265"` to `build_ffmpeg_cmd`, or set `encoder` in `main()` before the call |
 | "No fade / hard cut" | `FADE_SECS = 0` |
 | "Slower fade" | `FADE_SECS = 1.0` |
 | "Sort by filename" | `SORT_BY = "filename"` |
@@ -322,9 +342,9 @@ if __name__ == "__main__":
 
 **FFmpeg not found** — run `brew install ffmpeg`.
 
-**Video file is very large** — increase CRF to 22–28, or switch to H.264 (`libx264`) for slightly larger but more widely compatible files.
+**Video file is very large** — when using `hevc_videotoolbox`, increase `-q:v` above 65 (e.g. `80`) for smaller files at some quality cost. When using `libx265`, increase CRF to 22–28. Hardware encoders produce slightly larger files than libx265 at the same perceived quality.
 
-**Script is slow on many photos** — the JPEG temp-file approach is already efficient. For 100+ photos, consider reducing frame resolution during testing.
+**Script is slow on many photos** — on Apple Silicon the script automatically uses `hevc_videotoolbox` (hardware encoder), which is ~2-3× faster. If still slow, consider reducing frame resolution during testing (`FRAME_W = 1920`, `FRAME_H = 1080`).
 
 **Some photos have no creation date** — The script warns about these and places them at the end of the slideshow. To add EXIF dates, use a photo editor or `exiftool`. Alternatively, switch to filename sorting with `SORT_BY = "filename"`.
 
