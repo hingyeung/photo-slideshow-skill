@@ -20,6 +20,7 @@ This skill produces a 4K MP4 video from a folder of photos. Each photo is displa
 | Frame rate | 30 fps | |
 | Sort order | EXIF creation date (oldest first) | Photos without a timestamp appear at the end |
 | Audio | _(none — silent)_ | List of MP3 paths; audio is concatenated and looped/trimmed to match video duration |
+| Ken Burns motion | Enabled (auto) | Cycles zoom-in → zoom-out → pan L→R → pan R→L per slide; pan styles aim toward detected faces |
 
 The photo is always shown at its natural aspect ratio — never cropped or stretched.
 
@@ -43,7 +44,7 @@ Create a virtual environment next to the script so dependencies don't touch the 
 
 ```bash
 python3 -m venv slideshow-env
-slideshow-env/bin/pip install -q Pillow pillow-heif
+slideshow-env/bin/pip install -q Pillow pillow-heif opencv-python-headless
 ```
 
 `pillow-heif` adds HEIC support (iPhone photos); it's harmless to install even if not needed.
@@ -103,6 +104,10 @@ FADE_SECS    = 0.5                 # crossfade duration (0 = hard cut)
 FPS          = 30
 SORT_BY      = "date"              # "date" = EXIF creation date (oldest first); "filename" = alphabetical
 AUDIO_FILES  = []                  # list of MP3 paths — leave empty for silent video
+KEN_BURNS    = True                # slow pan-and-zoom on each slide
+KB_ZOOM_MAX  = 1.20                # max zoom factor (1.0 = none, 1.20 = 20%)
+KB_STYLE     = "auto"              # "zoom_in" | "zoom_out" | "pan_lr" | "pan_rl" | "auto"
+KB_FACE_DETECT = True              # pan toward detected faces when True
 # ───────────────────────────────────────────────────────────────────────────────
 
 SUPPORTED = {'.jpg', '.jpeg', '.png', '.heic', '.heif', '.tiff', '.tif', '.webp'}
@@ -190,6 +195,91 @@ def _detect_hw_encoder() -> str:
     return "hevc_videotoolbox" if "hevc_videotoolbox" in result.stdout else "libx265"
 
 
+def _detect_subject(slide_path: Path):
+    """Detect the largest face in a slide and return its normalised centre (fx, fy),
+    or None if OpenCV is unavailable or no face is found."""
+    if not KB_FACE_DETECT:
+        return None
+    try:
+        import cv2
+    except ImportError:
+        return None
+
+    img = cv2.imread(str(slide_path), cv2.IMREAD_GRAYSCALE)
+    if img is None:
+        return None
+
+    cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+    detector = cv2.CascadeClassifier(cascade_path)
+
+    # Scale down for faster detection — 960px wide is sufficient for Haar
+    scale = 960 / img.shape[1]
+    small = cv2.resize(img, (960, int(img.shape[0] * scale)))
+    faces = detector.detectMultiScale(small, scaleFactor=1.1, minNeighbors=5, minSize=(20, 20))
+
+    if not len(faces):
+        return None
+
+    # Pick the largest face by area
+    x, y, w, h = max(faces, key=lambda f: f[2] * f[3])
+    cx = (x + w / 2) / scale   # back to original pixel space
+    cy = (y + h / 2) / scale
+    return (cx / FRAME_W, cy / FRAME_H)   # normalised [0, 1]
+
+
+def _ken_burns_filter(slide_index: int, num_slides: int, subject_point=None) -> str:
+    """Return an FFmpeg zoompan filter string for one slide.
+
+    subject_point : (fx, fy) normalised [0,1] face centroid, or None.
+    When provided, pan styles drift from the frame centre toward the subject.
+    Zoom styles stay centre-anchored regardless.
+    """
+    d         = int(SLIDE_SECS * FPS)
+    size      = f"{FRAME_W}x{FRAME_H}"
+    drift     = int(FRAME_W * 0.04)       # 4% lateral drift fallback (no face)
+    excursion = round(KB_ZOOM_MAX - 1, 6)  # float safety: 1.20-1 = 0.19999... otherwise
+
+    style_cycle = ["zoom_in", "zoom_out", "pan_lr", "pan_rl"]
+    style = style_cycle[slide_index % 4] if KB_STYLE == "auto" else KB_STYLE
+
+    if style == "zoom_in":
+        # Zoom from 1.0 → KB_ZOOM_MAX, pinned to frame centre
+        z_expr = f"1+{excursion}*on/{d}"
+        x_expr = "iw/2-(iw/zoom/2)"
+        y_expr = "ih/2-(ih/zoom/2)"
+
+    elif style == "zoom_out":
+        # Zoom from KB_ZOOM_MAX → 1.0, pinned to frame centre
+        z_expr = f"{KB_ZOOM_MAX}-{excursion}*on/{d}"
+        x_expr = "iw/2-(iw/zoom/2)"
+        y_expr = "ih/2-(ih/zoom/2)"
+
+    else:
+        # Pan style — aim toward detected subject if available, else fixed L/R drift
+        z_half = round(1 + excursion / 2, 6)
+        z_expr = str(z_half)
+
+        if subject_point is not None:
+            fx, fy = subject_point
+            sx     = int(fx * FRAME_W)
+            sy     = int(fy * FRAME_H)
+            dx     = sx - FRAME_W // 2   # signed pixel offset from centre
+            dy     = sy - FRAME_H // 2
+            x_expr = f"iw/2-(iw/zoom/2)+{dx}*on/{d}"
+            y_expr = f"ih/2-(ih/zoom/2)+{dy}*on/{d}"
+        elif style == "pan_lr":
+            x_expr = f"iw/2-(iw/zoom/2)-{drift}+{2 * drift}*on/{d}"
+            y_expr = "ih/2-(ih/zoom/2)"
+        else:  # pan_rl
+            x_expr = f"iw/2-(iw/zoom/2)+{drift}-{2 * drift}*on/{d}"
+            y_expr = "ih/2-(ih/zoom/2)"
+
+    return (
+        f"zoompan=z='{z_expr}':x='{x_expr}':y='{y_expr}'"
+        f":d={d}:s={size}:fps={FPS}"
+    )
+
+
 def get_audio_duration_secs(path: Path) -> float:
     """Return duration of an audio file in seconds using ffprobe."""
     result = subprocess.run(
@@ -200,8 +290,10 @@ def get_audio_duration_secs(path: Path) -> float:
     return float(result.stdout.strip())
 
 
-def build_ffmpeg_cmd(slide_paths: list[Path], output: str, total_video_secs: float, encoder: str = "") -> list[str]:
+def build_ffmpeg_cmd(slide_paths: list[Path], output: str, total_video_secs: float, encoder: str = "",
+                     subject_points=None) -> list[str]:
     """Build FFmpeg command. Uses concat (hard cut) when FADE_SECS=0, xfade otherwise.
+    When KEN_BURNS=True, inserts a zoompan filter per slide before the concat/xfade stage.
     If AUDIO_FILES is set, concatenates and loops audio to match video duration."""
     cmd = ["ffmpeg", "-y"]
     n = len(slide_paths)
@@ -255,22 +347,36 @@ def build_ffmpeg_cmd(slide_paths: list[Path], output: str, total_video_secs: flo
         encode_flags += ["-map", "[vout]"]
     encode_flags += ["-movflags", "+faststart", output]
 
+    # --- Ken Burns zoompan stage ---
+    # When KEN_BURNS=True each raw input [N:v] is processed through zoompan → [kbN].
+    # The concat/xfade stage then consumes stage_labels instead of raw [N:v] labels.
+    filter_parts = []
+    if KEN_BURNS:
+        for i in range(n):
+            pt     = (subject_points[i] if subject_points else None)
+            kb_exp = _ken_burns_filter(i, n, subject_point=pt)
+            filter_parts.append(f"[{i}:v]{kb_exp}[kb{i}]")
+        stage_labels = [f"[kb{i}]" for i in range(n)]
+    else:
+        stage_labels = [f"[{i}:v]" for i in range(n)]
+
+    # --- Concat / xfade stage ---
     if n == 1 or FADE_SECS == 0:
         # Hard cut: use concat filter
-        video_filter = f"concat=n={n}:v=1:a=0[vout]"
+        inputs_str = "".join(stage_labels)
+        filter_parts.append(f"{inputs_str}concat=n={n}:v=1:a=0[vout]")
     else:
         # Crossfade: build xfade filter chain
-        filter_parts = []
-        last_label = "[0:v]"
+        last_label = stage_labels[0]
         for i in range(1, n):
             offset = round(SLIDE_SECS * i - FADE_SECS * i, 3)
             out_label = f"[v{i}]" if i < n - 1 else "[vout]"
             filter_parts.append(
-                f"{last_label}[{i}:v]xfade=transition=fade:duration={FADE_SECS}:offset={offset}{out_label}"
+                f"{last_label}{stage_labels[i]}xfade=transition=fade:duration={FADE_SECS}:offset={offset}{out_label}"
             )
             last_label = f"[v{i}]"
-        video_filter = ";".join(filter_parts)
 
+    video_filter = ";".join(filter_parts)
     full_filter = video_filter if not audio_filter else video_filter + ";" + audio_filter
     cmd += ["-filter_complex", full_filter] + encode_flags
     return cmd
@@ -289,16 +395,19 @@ def main():
 
     tmpdir = tempfile.mkdtemp(prefix="slideshow_")
     try:
-        slide_paths = []
+        slide_paths    = []
+        subject_points = []
         for i, photo in enumerate(photos):
             print(f"  [{i+1}/{len(photos)}] Processing {photo.name} …")
-            frame = make_frame(photo)
+            frame      = make_frame(photo)
             slide_path = Path(tmpdir) / f"slide_{i:04d}.jpg"
             frame.save(slide_path, "JPEG", quality=95)
             slide_paths.append(slide_path)
+            subject_points.append(_detect_subject(slide_path))
 
         print("Encoding video …")
-        cmd = build_ffmpeg_cmd(slide_paths, OUTPUT_FILE, total_video_secs, encoder)
+        cmd = build_ffmpeg_cmd(slide_paths, OUTPUT_FILE, total_video_secs, encoder,
+                               subject_points=subject_points)
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
             print("FFmpeg error:", result.stderr[-2000:], file=sys.stderr)
@@ -333,6 +442,11 @@ if __name__ == "__main__":
 | "Include only landscape photos" | Filter in `get_photos()`: keep only photos where `width > height` after EXIF transpose (not yet implemented) |
 | "Add background music" | `AUDIO_FILES = ["/path/to/track1.mp3", "/path/to/track2.mp3"]` |
 | "No music / silent video" | `AUDIO_FILES = []` |
+| "No Ken Burns / static slides" | `KEN_BURNS = False` |
+| "Only zoom in on every slide" | `KB_STYLE = "zoom_in"` |
+| "Gentler zoom" | `KB_ZOOM_MAX = 1.10` |
+| "More dramatic zoom" | `KB_ZOOM_MAX = 1.35` |
+| "Disable face detection" | `KB_FACE_DETECT = False` |
 
 ## Common issues
 
@@ -351,3 +465,9 @@ if __name__ == "__main__":
 **Audio missing from output** — Ensure all paths in `AUDIO_FILES` exist before running; `ffprobe` will error on a missing file.
 
 **Unsupported audio format** — The skill expects MP3. For AAC, WAV, or FLAC files, either ask the user to convert to MP3 first, or adjust the AUDIO_FILES entries accordingly (FFmpeg can decode most formats without code changes).
+
+**Ken Burns is slow at 4K** — The `zoompan` filter runs on CPU and processes every frame. For quick iteration, set `FRAME_W = 1920` and `FRAME_H = 1080`; switch back to 4K for the final render.
+
+**Ken Burns shows a black border flash** — Means the zoom dropped below 1.0, exposing the canvas edge. Ensure `KB_ZOOM_MAX >= 1.0`. The default 1.20 with `"auto"` style will not trigger this.
+
+**Face detection not working** — Face detection requires `opencv-python-headless`. Re-run the pip install step to confirm it installed. Detection runs on a 960px-wide downscale of each slide (~50ms per photo). Set `KB_FACE_DETECT = False` to disable it entirely.
