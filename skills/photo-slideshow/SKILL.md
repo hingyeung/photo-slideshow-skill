@@ -194,20 +194,31 @@ def make_frame(photo_path: Path) -> Image.Image:
 
 
 def make_frame_kb(photo_path: Path) -> Image.Image:
-    """Composite photo centred on the available-area canvas only (avail_w × avail_h).
-    Used when KEN_BURNS=True so that FFmpeg animates within this inner canvas and the
-    outer matt border is added as a fixed pad — keeping the matt visually stable."""
+    """Save photo at oversized dimensions (avail × KB_ZOOM_MAX) using fill/cover mode.
+
+    The source is larger than the display window so zoompan can zoom/pan within the
+    photo content itself.  Fill mode ensures the photo always covers the full source
+    (no letterbox gaps) so the photo fills the avail window at every zoom level.
+
+    At z=1.0 zoompan shows the full oversized source scaled down to avail_w × avail_h.
+    At z=KB_ZOOM_MAX zoompan shows only the central avail_w × avail_h crop at 1:1.
+    In both cases the photo fills the avail window — no background colour ever shows.
+    """
     avail_w, avail_h, _, _ = _avail_dims()
-    canvas = Image.new("RGB", (avail_w, avail_h), MATT_COLOUR)
+    src_w = int(avail_w * KB_ZOOM_MAX)
+    src_h = int(avail_h * KB_ZOOM_MAX)
     photo = load_photo(photo_path)
 
-    ratio = min(avail_w / photo.width, avail_h / photo.height)
-    photo = photo.resize((int(photo.width * ratio), int(photo.height * ratio)), Image.LANCZOS)
+    # Fill (cover) mode: scale so the photo covers src_w × src_h entirely, then
+    # centre-crop — no letterbox gaps in the source.
+    ratio = max(src_w / photo.width, src_h / photo.height)
+    scaled_w = int(photo.width * ratio)
+    scaled_h = int(photo.height * ratio)
+    photo = photo.resize((scaled_w, scaled_h), Image.LANCZOS)
 
-    x = (avail_w - photo.width) // 2
-    y = (avail_h - photo.height) // 2
-    canvas.paste(photo, (x, y))
-    return canvas
+    x_off = (scaled_w - src_w) // 2
+    y_off = (scaled_h - src_h) // 2
+    return photo.crop((x_off, y_off, x_off + src_w, y_off + src_h))
 
 
 def _detect_hw_encoder() -> str:
@@ -248,7 +259,10 @@ def _detect_subject(slide_path: Path):
     x, y, w, h = max(faces, key=lambda f: f[2] * f[3])
     cx = (x + w / 2) / scale   # back to original pixel space
     cy = (y + h / 2) / scale
-    return (cx / FRAME_W, cy / FRAME_H)   # normalised [0, 1]
+    # Normalise within the source image dimensions (avail × KB_ZOOM_MAX), not full frame
+    src_w = img.shape[1]
+    src_h = img.shape[0]
+    return (cx / src_w, cy / src_h)
 
 
 def _ken_burns_filter(slide_index: int, num_slides: int, subject_point=None) -> str:
@@ -262,10 +276,12 @@ def _ken_burns_filter(slide_index: int, num_slides: int, subject_point=None) -> 
     When provided, pan styles drift from the canvas centre toward the subject.
     """
     avail_w, avail_h, pad_x, pad_y = _avail_dims()
+    src_w     = int(avail_w * KB_ZOOM_MAX)   # oversized source dimensions (iw/ih in zoompan)
+    src_h     = int(avail_h * KB_ZOOM_MAX)
     d         = int(SLIDE_SECS * FPS)
     size      = f"{avail_w}x{avail_h}"
-    drift     = int(avail_w * 0.04)        # 4% lateral drift fallback (no face)
-    excursion = round(KB_ZOOM_MAX - 1, 6)  # float safety: 1.20-1 = 0.19999... otherwise
+    drift     = int(src_w * 0.04)           # 4% of source width for lateral drift
+    excursion = round(KB_ZOOM_MAX - 1, 6)   # float safety: 1.20-1 = 0.19999... otherwise
     matt_hex  = "#{:02X}{:02X}{:02X}".format(*MATT_COLOUR)
 
     style_cycle = ["zoom_in", "zoom_out", "pan_lr", "pan_rl"]
@@ -289,12 +305,12 @@ def _ken_burns_filter(slide_index: int, num_slides: int, subject_point=None) -> 
         z_expr = str(z_half)
 
         if subject_point is not None:
-            # subject_point coords are in avail-canvas space (from make_frame_kb JPEG)
+            # subject_point coords are normalised within the oversized source (src_w × src_h)
             fx, fy = subject_point
-            sx     = int(fx * avail_w)
-            sy     = int(fy * avail_h)
-            dx     = sx - avail_w // 2   # signed pixel offset from canvas centre
-            dy     = sy - avail_h // 2
+            sx     = int(fx * src_w)
+            sy     = int(fy * src_h)
+            dx     = sx - src_w // 2    # signed pixel offset from source centre
+            dy     = sy - src_h // 2
             x_expr = f"iw/2-(iw/zoom/2)+{dx}*on/{d}"
             y_expr = f"ih/2-(ih/zoom/2)+{dy}*on/{d}"
         elif style == "pan_lr":
