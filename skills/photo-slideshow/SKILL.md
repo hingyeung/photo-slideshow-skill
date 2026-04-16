@@ -166,8 +166,15 @@ def load_photo(path: Path) -> Image.Image:
     return img.convert("RGB")
 
 
+def _avail_dims():
+    """Return (avail_w, avail_h, pad_x, pad_y) — the photo window inside the matt."""
+    pad_x = int(FRAME_W * PADDING)
+    pad_y = int(FRAME_H * PADDING)
+    return FRAME_W - 2 * pad_x, FRAME_H - 2 * pad_y, pad_x, pad_y
+
+
 def make_frame(photo_path: Path) -> Image.Image:
-    """Composite photo centred on matt canvas, preserving its aspect ratio."""
+    """Composite photo centred on full matt canvas (FRAME_W × FRAME_H)."""
     canvas = Image.new("RGB", (FRAME_W, FRAME_H), MATT_COLOUR)
     photo = load_photo(photo_path)
 
@@ -182,6 +189,23 @@ def make_frame(photo_path: Path) -> Image.Image:
 
     x = (FRAME_W - photo.width) // 2
     y = (FRAME_H - photo.height) // 2
+    canvas.paste(photo, (x, y))
+    return canvas
+
+
+def make_frame_kb(photo_path: Path) -> Image.Image:
+    """Composite photo centred on the available-area canvas only (avail_w × avail_h).
+    Used when KEN_BURNS=True so that FFmpeg animates within this inner canvas and the
+    outer matt border is added as a fixed pad — keeping the matt visually stable."""
+    avail_w, avail_h, _, _ = _avail_dims()
+    canvas = Image.new("RGB", (avail_w, avail_h), MATT_COLOUR)
+    photo = load_photo(photo_path)
+
+    ratio = min(avail_w / photo.width, avail_h / photo.height)
+    photo = photo.resize((int(photo.width * ratio), int(photo.height * ratio)), Image.LANCZOS)
+
+    x = (avail_w - photo.width) // 2
+    y = (avail_h - photo.height) // 2
     canvas.paste(photo, (x, y))
     return canvas
 
@@ -228,28 +252,33 @@ def _detect_subject(slide_path: Path):
 
 
 def _ken_burns_filter(slide_index: int, num_slides: int, subject_point=None) -> str:
-    """Return an FFmpeg zoompan filter string for one slide.
+    """Return an FFmpeg filter string (zoompan + pad) for one slide.
 
-    subject_point : (fx, fy) normalised [0,1] face centroid, or None.
-    When provided, pan styles drift from the frame centre toward the subject.
-    Zoom styles stay centre-anchored regardless.
+    The zoompan operates on the avail-area canvas (avail_w × avail_h), animating the
+    photo within the photo window only. The pad filter then adds the fixed matt border
+    to restore the full FRAME_W × FRAME_H output — so the matt never moves.
+
+    subject_point : (fx, fy) normalised [0,1] within the avail canvas, or None.
+    When provided, pan styles drift from the canvas centre toward the subject.
     """
+    avail_w, avail_h, pad_x, pad_y = _avail_dims()
     d         = int(SLIDE_SECS * FPS)
-    size      = f"{FRAME_W}x{FRAME_H}"
-    drift     = int(FRAME_W * 0.04)       # 4% lateral drift fallback (no face)
+    size      = f"{avail_w}x{avail_h}"
+    drift     = int(avail_w * 0.04)        # 4% lateral drift fallback (no face)
     excursion = round(KB_ZOOM_MAX - 1, 6)  # float safety: 1.20-1 = 0.19999... otherwise
+    matt_hex  = "#{:02X}{:02X}{:02X}".format(*MATT_COLOUR)
 
     style_cycle = ["zoom_in", "zoom_out", "pan_lr", "pan_rl"]
     style = style_cycle[slide_index % 4] if KB_STYLE == "auto" else KB_STYLE
 
     if style == "zoom_in":
-        # Zoom from 1.0 → KB_ZOOM_MAX, pinned to frame centre
+        # Zoom from 1.0 → KB_ZOOM_MAX, pinned to canvas centre
         z_expr = f"1+{excursion}*on/{d}"
         x_expr = "iw/2-(iw/zoom/2)"
         y_expr = "ih/2-(ih/zoom/2)"
 
     elif style == "zoom_out":
-        # Zoom from KB_ZOOM_MAX → 1.0, pinned to frame centre
+        # Zoom from KB_ZOOM_MAX → 1.0, pinned to canvas centre
         z_expr = f"{KB_ZOOM_MAX}-{excursion}*on/{d}"
         x_expr = "iw/2-(iw/zoom/2)"
         y_expr = "ih/2-(ih/zoom/2)"
@@ -260,11 +289,12 @@ def _ken_burns_filter(slide_index: int, num_slides: int, subject_point=None) -> 
         z_expr = str(z_half)
 
         if subject_point is not None:
+            # subject_point coords are in avail-canvas space (from make_frame_kb JPEG)
             fx, fy = subject_point
-            sx     = int(fx * FRAME_W)
-            sy     = int(fy * FRAME_H)
-            dx     = sx - FRAME_W // 2   # signed pixel offset from centre
-            dy     = sy - FRAME_H // 2
+            sx     = int(fx * avail_w)
+            sy     = int(fy * avail_h)
+            dx     = sx - avail_w // 2   # signed pixel offset from canvas centre
+            dy     = sy - avail_h // 2
             x_expr = f"iw/2-(iw/zoom/2)+{dx}*on/{d}"
             y_expr = f"ih/2-(ih/zoom/2)+{dy}*on/{d}"
         elif style == "pan_lr":
@@ -274,9 +304,10 @@ def _ken_burns_filter(slide_index: int, num_slides: int, subject_point=None) -> 
             x_expr = f"iw/2-(iw/zoom/2)+{drift}-{2 * drift}*on/{d}"
             y_expr = "ih/2-(ih/zoom/2)"
 
+    # zoompan animates within avail area; pad restores the fixed matt border
     return (
-        f"zoompan=z='{z_expr}':x='{x_expr}':y='{y_expr}'"
-        f":d={d}:s={size}:fps={FPS}"
+        f"zoompan=z='{z_expr}':x='{x_expr}':y='{y_expr}':d={d}:s={size}:fps={FPS},"
+        f"pad={FRAME_W}:{FRAME_H}:{pad_x}:{pad_y}:color={matt_hex}"
     )
 
 
@@ -399,7 +430,9 @@ def main():
         subject_points = []
         for i, photo in enumerate(photos):
             print(f"  [{i+1}/{len(photos)}] Processing {photo.name} …")
-            frame      = make_frame(photo)
+            # Ken Burns: save inner-canvas frame (avail_w × avail_h) so the matt
+            # stays fixed via FFmpeg pad; static mode: save full composited frame.
+            frame      = make_frame_kb(photo) if KEN_BURNS else make_frame(photo)
             slide_path = Path(tmpdir) / f"slide_{i:04d}.jpg"
             frame.save(slide_path, "JPEG", quality=95)
             slide_paths.append(slide_path)
