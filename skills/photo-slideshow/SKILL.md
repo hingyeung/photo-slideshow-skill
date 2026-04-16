@@ -265,66 +265,75 @@ def _detect_subject(slide_path: Path):
     return (cx / src_w, cy / src_h)
 
 
-def _ken_burns_filter(slide_index: int, num_slides: int, subject_point=None) -> str:
-    """Return an FFmpeg filter string (zoompan + pad) for one slide.
+def make_ken_burns_frames(source_path: Path, slide_index: int,
+                          subject_point, tmpdir: Path, slide_num: int) -> Path:
+    """Render every frame of a Ken Burns slide in PIL and save as JPEGs.
 
-    The zoompan operates on the avail-area canvas (avail_w × avail_h), animating the
-    photo within the photo window only. The pad filter then adds the fixed matt border
-    to restore the full FRAME_W × FRAME_H output — so the matt never moves.
+    Each frame is a full FRAME_W × FRAME_H composite (photo + matt), so the matt
+    border is pixel-exact by arithmetic — not left to FFmpeg filter quirks.
 
-    subject_point : (fx, fy) normalised [0,1] within the avail canvas, or None.
-    When provided, pan styles drift from the canvas centre toward the subject.
+    source_path  : oversized source JPEG (src_w × src_h = avail × KB_ZOOM_MAX)
+    subject_point: normalised (fx, fy) within source_path, or None
+    Returns      : FFmpeg image-sequence pattern, e.g. /tmp/…/slide_0002_f%04d.jpg
     """
     avail_w, avail_h, pad_x, pad_y = _avail_dims()
-    src_w     = int(avail_w * KB_ZOOM_MAX)   # oversized source dimensions (iw/ih in zoompan)
-    src_h     = int(avail_h * KB_ZOOM_MAX)
+
+    source       = Image.open(source_path).convert("RGB")
+    src_w, src_h = source.size
+
     d         = int(SLIDE_SECS * FPS)
-    size      = f"{avail_w}x{avail_h}"
-    drift     = int(src_w * 0.04)           # 4% of source width for lateral drift
-    excursion = round(KB_ZOOM_MAX - 1, 6)   # float safety: 1.20-1 = 0.19999... otherwise
-    matt_hex  = "#{:02X}{:02X}{:02X}".format(*MATT_COLOUR)
+    excursion = KB_ZOOM_MAX - 1.0
 
     style_cycle = ["zoom_in", "zoom_out", "pan_lr", "pan_rl"]
     style = style_cycle[slide_index % 4] if KB_STYLE == "auto" else KB_STYLE
 
-    if style == "zoom_in":
-        # Zoom from 1.0 → KB_ZOOM_MAX, pinned to canvas centre
-        z_expr = f"1+{excursion}*on/{d}"
-        x_expr = "iw/2-(iw/zoom/2)"
-        y_expr = "ih/2-(ih/zoom/2)"
+    for f in range(d):
+        t = f / max(d - 1, 1)     # normalised time [0, 1]
 
-    elif style == "zoom_out":
-        # Zoom from KB_ZOOM_MAX → 1.0, pinned to canvas centre
-        z_expr = f"{KB_ZOOM_MAX}-{excursion}*on/{d}"
-        x_expr = "iw/2-(iw/zoom/2)"
-        y_expr = "ih/2-(ih/zoom/2)"
+        # Zoom level for this frame
+        if style == "zoom_in":
+            zoom = 1.0 + excursion * t
+        elif style == "zoom_out":
+            zoom = KB_ZOOM_MAX - excursion * t
+        else:
+            zoom = 1.0 + excursion / 2   # constant mid-zoom for pan styles
 
-    else:
-        # Pan style — aim toward detected subject if available, else fixed L/R drift
-        z_half = round(1 + excursion / 2, 6)
-        z_expr = str(z_half)
+        # Crop viewport: how many source pixels to sample
+        crop_w = round(src_w / zoom)
+        crop_h = round(src_h / zoom)
 
-        if subject_point is not None:
-            # subject_point coords are normalised within the oversized source (src_w × src_h)
-            fx, fy = subject_point
-            sx     = int(fx * src_w)
-            sy     = int(fy * src_h)
-            dx     = sx - src_w // 2    # signed pixel offset from source centre
-            dy     = sy - src_h // 2
-            x_expr = f"iw/2-(iw/zoom/2)+{dx}*on/{d}"
-            y_expr = f"ih/2-(ih/zoom/2)+{dy}*on/{d}"
+        # Centre of the crop in source pixel coordinates
+        if style in ("zoom_in", "zoom_out"):
+            cx, cy = src_w / 2, src_h / 2
+        elif subject_point is not None:
+            fx, fy    = subject_point
+            target_cx = fx * src_w
+            target_cy = fy * src_h
+            cx = src_w / 2 + (target_cx - src_w / 2) * t
+            cy = src_h / 2 + (target_cy - src_h / 2) * t
         elif style == "pan_lr":
-            x_expr = f"iw/2-(iw/zoom/2)-{drift}+{2 * drift}*on/{d}"
-            y_expr = "ih/2-(ih/zoom/2)"
+            drift = (src_w - crop_w) * 0.4    # 40% of available headroom
+            cx    = src_w / 2 - drift / 2 + drift * t
+            cy    = src_h / 2
         else:  # pan_rl
-            x_expr = f"iw/2-(iw/zoom/2)+{drift}-{2 * drift}*on/{d}"
-            y_expr = "ih/2-(ih/zoom/2)"
+            drift = (src_w - crop_w) * 0.4
+            cx    = src_w / 2 + drift / 2 - drift * t
+            cy    = src_h / 2
 
-    # zoompan animates within avail area; pad restores the fixed matt border
-    return (
-        f"zoompan=z='{z_expr}':x='{x_expr}':y='{y_expr}':d={d}:s={size}:fps={FPS},"
-        f"pad={FRAME_W}:{FRAME_H}:{pad_x}:{pad_y}:color={matt_hex}"
-    )
+        # Crop box clamped to source bounds
+        x1 = round(cx - crop_w / 2)
+        y1 = round(cy - crop_h / 2)
+        x1 = max(0, min(x1, src_w - crop_w))
+        y1 = max(0, min(y1, src_h - crop_h))
+
+        crop        = source.crop((x1, y1, x1 + crop_w, y1 + crop_h))
+        photo_frame = crop.resize((avail_w, avail_h), Image.LANCZOS)
+
+        frame = Image.new("RGB", (FRAME_W, FRAME_H), MATT_COLOUR)
+        frame.paste(photo_frame, (pad_x, pad_y))
+        frame.save(tmpdir / f"slide_{slide_num:04d}_f{f:04d}.jpg", "JPEG", quality=92)
+
+    return tmpdir / f"slide_{slide_num:04d}_f%04d.jpg"
 
 
 def get_audio_duration_secs(path: Path) -> float:
@@ -338,15 +347,20 @@ def get_audio_duration_secs(path: Path) -> float:
 
 
 def build_ffmpeg_cmd(slide_paths: list[Path], output: str, total_video_secs: float, encoder: str = "",
-                     subject_points=None) -> list[str]:
+                     subject_points=None, kb_frame_patterns=None) -> list[str]:
     """Build FFmpeg command. Uses concat (hard cut) when FADE_SECS=0, xfade otherwise.
-    When KEN_BURNS=True, inserts a zoompan filter per slide before the concat/xfade stage.
+    When KEN_BURNS=True and kb_frame_patterns is provided, reads pre-rendered frame
+    sequences (each already a full FRAME_W × FRAME_H composite) — no zoompan needed.
     If AUDIO_FILES is set, concatenates and loops audio to match video duration."""
     cmd = ["ffmpeg", "-y"]
     n = len(slide_paths)
 
-    for p in slide_paths:
-        cmd += ["-loop", "1", "-t", str(SLIDE_SECS), "-i", str(p)]
+    if KEN_BURNS and kb_frame_patterns:
+        for pat in kb_frame_patterns:
+            cmd += ["-framerate", str(FPS), "-i", str(pat)]
+    else:
+        for p in slide_paths:
+            cmd += ["-loop", "1", "-t", str(SLIDE_SECS), "-i", str(p)]
 
     # Actual video duration is shorter than n*SLIDE_SECS when xfade overlaps are applied
     if FADE_SECS > 0 and n > 1:
@@ -394,18 +408,11 @@ def build_ffmpeg_cmd(slide_paths: list[Path], output: str, total_video_secs: flo
         encode_flags += ["-map", "[vout]"]
     encode_flags += ["-movflags", "+faststart", output]
 
-    # --- Ken Burns zoompan stage ---
-    # When KEN_BURNS=True each raw input [N:v] is processed through zoompan → [kbN].
-    # The concat/xfade stage then consumes stage_labels instead of raw [N:v] labels.
+    # --- Video stage labels ---
+    # Ken Burns inputs are already full FRAME_W × FRAME_H composites rendered by PIL,
+    # so no zoompan or pad filter is needed here.
     filter_parts = []
-    if KEN_BURNS:
-        for i in range(n):
-            pt     = (subject_points[i] if subject_points else None)
-            kb_exp = _ken_burns_filter(i, n, subject_point=pt)
-            filter_parts.append(f"[{i}:v]{kb_exp}[kb{i}]")
-        stage_labels = [f"[kb{i}]" for i in range(n)]
-    else:
-        stage_labels = [f"[{i}:v]" for i in range(n)]
+    stage_labels = [f"[{i}:v]" for i in range(n)]
 
     # --- Concat / xfade stage ---
     if n == 1 or FADE_SECS == 0:
@@ -442,21 +449,33 @@ def main():
 
     tmpdir = tempfile.mkdtemp(prefix="slideshow_")
     try:
-        slide_paths    = []
-        subject_points = []
+        slide_paths       = []
+        subject_points    = []
+        kb_frame_patterns = [] if KEN_BURNS else None
+
         for i, photo in enumerate(photos):
             print(f"  [{i+1}/{len(photos)}] Processing {photo.name} …")
-            # Ken Burns: save inner-canvas frame (avail_w × avail_h) so the matt
-            # stays fixed via FFmpeg pad; static mode: save full composited frame.
-            frame      = make_frame_kb(photo) if KEN_BURNS else make_frame(photo)
-            slide_path = Path(tmpdir) / f"slide_{i:04d}.jpg"
-            frame.save(slide_path, "JPEG", quality=95)
-            slide_paths.append(slide_path)
-            subject_points.append(_detect_subject(slide_path))
+            if KEN_BURNS:
+                # Save oversized source for face detection, then render all KB frames in PIL
+                source_frame = make_frame_kb(photo)
+                source_path  = Path(tmpdir) / f"slide_{i:04d}.jpg"
+                source_frame.save(source_path, "JPEG", quality=95)
+                slide_paths.append(source_path)
+                sp = _detect_subject(source_path)
+                subject_points.append(sp)
+                pat = make_ken_burns_frames(source_path, i, sp, Path(tmpdir), i)
+                kb_frame_patterns.append(pat)
+            else:
+                frame      = make_frame(photo)
+                slide_path = Path(tmpdir) / f"slide_{i:04d}.jpg"
+                frame.save(slide_path, "JPEG", quality=95)
+                slide_paths.append(slide_path)
+                subject_points.append(None)
 
         print("Encoding video …")
         cmd = build_ffmpeg_cmd(slide_paths, OUTPUT_FILE, total_video_secs, encoder,
-                               subject_points=subject_points)
+                               subject_points=subject_points,
+                               kb_frame_patterns=kb_frame_patterns)
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
             print("FFmpeg error:", result.stderr[-2000:], file=sys.stderr)
