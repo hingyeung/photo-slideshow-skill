@@ -294,13 +294,14 @@ def make_ken_burns_frames(source_path: Path, slide_index: int,
     style = style_cycle[slide_index % 4] if KB_STYLE == "auto" else KB_STYLE
 
     for f in range(d):
-        t = f / max(d - 1, 1)     # normalised time [0, 1]
+        t = f / max(d - 1, 1)                        # normalised time [0, 1]
+        t_eased = (1 - math.cos(math.pi * t)) / 2   # ease-in-out: slow start, slow end
 
         # Zoom level for this frame
         if style == "zoom_in":
-            zoom = 1.0 + excursion * t
+            zoom = 1.0 + excursion * t_eased
         elif style == "zoom_out":
-            zoom = KB_ZOOM_MAX - excursion * t
+            zoom = KB_ZOOM_MAX - excursion * t_eased
         else:
             zoom = 1.0 + excursion / 2   # constant mid-zoom for pan styles
 
@@ -312,18 +313,22 @@ def make_ken_burns_frames(source_path: Path, slide_index: int,
         if style in ("zoom_in", "zoom_out"):
             cx, cy = src_w / 2, src_h / 2
         elif subject_point is not None:
-            fx, fy    = subject_point
-            target_cx = fx * src_w
-            target_cy = fy * src_h
-            cx = src_w / 2 + (target_cx - src_w / 2) * t
-            cy = src_h / 2 + (target_cy - src_h / 2) * t
+            fx, fy = subject_point
+            # Clamp target to the reachable crop-centre range so the pan never hits
+            # the source boundary (pan zoom is constant, so crop_w/crop_h are fixed)
+            cx_min, cx_max = crop_w / 2.0, src_w - crop_w / 2.0
+            cy_min, cy_max = crop_h / 2.0, src_h - crop_h / 2.0
+            target_cx = max(cx_min, min(cx_max, fx * src_w))
+            target_cy = max(cy_min, min(cy_max, fy * src_h))
+            cx = src_w / 2 + (target_cx - src_w / 2) * t_eased
+            cy = src_h / 2 + (target_cy - src_h / 2) * t_eased
         elif style == "pan_lr":
             drift = (src_w - crop_w) * 0.4    # 40% of available headroom
-            cx    = src_w / 2 - drift / 2 + drift * t
+            cx    = src_w / 2 - drift / 2 + drift * t_eased
             cy    = src_h / 2
         else:  # pan_rl
             drift = (src_w - crop_w) * 0.4
-            cx    = src_w / 2 + drift / 2 - drift * t
+            cx    = src_w / 2 + drift / 2 - drift * t_eased
             cy    = src_h / 2
 
         # Crop box clamped to source bounds
