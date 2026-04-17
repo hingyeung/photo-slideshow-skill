@@ -88,6 +88,38 @@
           "check": "qualitative"
         }
       ]
+    },
+    {
+      "id": 4,
+      "prompt": "Create a slideshow from /Users/samli/dev/photo-slideshow-skill/test_photos with the Ken Burns pan-and-zoom effect enabled. Save to /Users/samli/dev/photo-slideshow-skill/photo-slideshow-workspace/iteration-1/eval-4/output/ken-burns-slideshow.mp4",
+      "expected_output": "A 4K MP4 with slow pan-and-zoom motion on each slide. The generated script must have KEN_BURNS = True and KB_FACE_DETECT = True, include a _detect_subject function using OpenCV Haar cascades, a _ken_burns_filter function that accepts a subject_point argument, and build_ffmpeg_cmd must inject zoompan filter expressions labelled [kb0], [kb1], etc. before the xfade or concat chain.",
+      "files": [],
+      "assertions": [
+        {
+          "text": "An MP4 file is produced at the specified output path",
+          "check": "file_exists"
+        },
+        {
+          "text": "The output file is a valid video (non-zero file size > 1MB)",
+          "check": "file_size_gt_1mb"
+        },
+        {
+          "text": "KEN_BURNS = True and KB_FACE_DETECT = True are set in the generated script",
+          "check": "qualitative"
+        },
+        {
+          "text": "The generated script contains _detect_subject using cv2.CascadeClassifier and haarcascade_frontalface_default.xml",
+          "check": "qualitative"
+        },
+        {
+          "text": "The generated script contains _ken_burns_filter accepting a subject_point parameter",
+          "check": "qualitative"
+        },
+        {
+          "text": "The filter_complex in build_ffmpeg_cmd contains zoompan entries labelled [kb0], [kb1], etc. before the xfade or concat chain",
+          "check": "qualitative"
+        }
+      ]
     }
   ]
 }
