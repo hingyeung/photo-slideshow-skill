@@ -40,9 +40,10 @@ Ask the user (or infer from context) for:
 which ffmpeg || brew install ffmpeg
 ```
 
-Create a virtual environment next to the script so dependencies don't touch the system Python:
+`cd` into the photo directory first, then create the virtual environment there. All relative paths in the generated script resolve from this directory, and the output video lands next to the photos by default.
 
 ```bash
+cd /path/to/photos
 python3 -m venv slideshow-env
 slideshow-env/bin/pip install -q Pillow pillow-heif opencv-python-headless
 ```
@@ -51,13 +52,13 @@ slideshow-env/bin/pip install -q Pillow pillow-heif opencv-python-headless
 
 ### Step 3: Generate and run the script
 
-Write `slideshow-env/generate_slideshow.py` (see template below) with the user's settings filled in, then run it via the venv:
+Write `slideshow-env/generate_slideshow.py` (see template below) with the user's settings filled in, then run it from the photo directory via the venv:
 
 ```bash
 slideshow-env/bin/python slideshow-env/generate_slideshow.py
 ```
 
-Placing the script inside `slideshow-env/` keeps the user's working directory clean and prevents it being accidentally committed.
+Placing the script inside `slideshow-env/` keeps the photo directory clean and prevents it being accidentally committed.
 
 ### Step 4: Report result
 
