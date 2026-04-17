@@ -85,6 +85,7 @@ import shutil
 from pathlib import Path
 from datetime import datetime
 from PIL import Image, ImageOps
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 # ── HEIC support (installed into venv via pip install pillow-heif) ─────────────
 try:
@@ -294,6 +295,10 @@ def make_ken_burns_frames(source_path: Path, slide_index: int,
     style_cycle = ["zoom_in", "zoom_out", "pan_lr", "pan_rl"]
     style = style_cycle[slide_index % 4] if KB_STYLE == "auto" else KB_STYLE
 
+    # Pre-allocate once; copy() per frame is a plain memcpy, much faster than
+    # Image.new() + fill on every iteration.
+    matt_base = Image.new("RGB", (FRAME_W, FRAME_H), MATT_COLOUR)
+
     for f in range(d):
         t = f / max(d - 1, 1)                        # normalised time [0, 1]
         t_eased = (1 - math.cos(math.pi * t)) / 2   # ease-in-out: slow start, slow end
@@ -345,9 +350,11 @@ def make_ken_burns_frames(source_path: Path, slide_index: int,
         # landscape photos have zero offset and behave identically to before)
         paste_x = pad_x + (avail_w - fit_w) // 2
         paste_y = pad_y + (avail_h - fit_h) // 2
-        frame = Image.new("RGB", (FRAME_W, FRAME_H), MATT_COLOUR)
+        frame = matt_base.copy()
         frame.paste(photo_frame, (paste_x, paste_y))
-        frame.save(tmpdir / f"slide_{slide_num:04d}_f{f:04d}.jpg", "JPEG", quality=92)
+        # quality=85 for intermediates — FFmpeg re-encodes to HEVC, so values above ~80
+        # add file size without improving the final video.
+        frame.save(tmpdir / f"slide_{slide_num:04d}_f{f:04d}.jpg", "JPEG", quality=85)
 
     return tmpdir / f"slide_{slide_num:04d}_f%04d.jpg"
 
@@ -452,6 +459,24 @@ def build_ffmpeg_cmd(slide_paths: list[Path], output: str, total_video_secs: flo
     return cmd
 
 
+def _render_slide_task(args):
+    """Worker: render one Ken Burns slide and return its metadata.
+
+    Must be a top-level function so ProcessPoolExecutor can pickle it on spawn-mode
+    platforms (macOS default). All module-level constants (SLIDE_SECS, FPS, etc.) are
+    available because the worker re-imports the script at spawn time.
+    """
+    photo_path, slide_index, tmpdir_str = args
+    photo  = Path(photo_path)
+    tmpdir = Path(tmpdir_str)
+    source_frame = make_frame_kb(photo)
+    source_path  = tmpdir / f"slide_{slide_index:04d}.jpg"
+    source_frame.save(source_path, "JPEG", quality=95)
+    sp  = _detect_subject(source_path)
+    pat = make_ken_burns_frames(source_path, slide_index, sp, tmpdir, slide_index)
+    return slide_index, source_path, sp, pat
+
+
 def main():
     photos = get_photos(PHOTO_DIR)
     if not photos:
@@ -469,19 +494,26 @@ def main():
         subject_points    = []
         kb_frame_patterns = [] if KEN_BURNS else None
 
-        for i, photo in enumerate(photos):
-            print(f"  [{i+1}/{len(photos)}] Processing {photo.name} …")
-            if KEN_BURNS:
-                # Save oversized source for face detection, then render all KB frames in PIL
-                source_frame = make_frame_kb(photo)
-                source_path  = Path(tmpdir) / f"slide_{i:04d}.jpg"
-                source_frame.save(source_path, "JPEG", quality=95)
-                slide_paths.append(source_path)
-                sp = _detect_subject(source_path)
+        if KEN_BURNS:
+            # Render all slides in parallel — each slide's frames are fully independent.
+            n_workers = min(len(photos), os.cpu_count() or 4)
+            args_list = [(str(photo), i, tmpdir) for i, photo in enumerate(photos)]
+            completed: dict[int, tuple] = {}
+            with ProcessPoolExecutor(max_workers=n_workers) as executor:
+                future_to_idx = {executor.submit(_render_slide_task, a): a[1] for a in args_list}
+                for future in as_completed(future_to_idx):
+                    idx, source_path, sp, pat = future.result()
+                    completed[idx] = (source_path, sp, pat)
+                    print(f"  [{len(completed)}/{len(photos)}] Slide {idx + 1} done")
+            # Reassemble results in original photo order
+            for i in range(len(photos)):
+                src, sp, pat = completed[i]
+                slide_paths.append(src)
                 subject_points.append(sp)
-                pat = make_ken_burns_frames(source_path, i, sp, Path(tmpdir), i)
                 kb_frame_patterns.append(pat)
-            else:
+        else:
+            for i, photo in enumerate(photos):
+                print(f"  [{i+1}/{len(photos)}] Processing {photo.name} …")
                 frame      = make_frame(photo)
                 slide_path = Path(tmpdir) / f"slide_{i:04d}.jpg"
                 frame.save(slide_path, "JPEG", quality=95)
