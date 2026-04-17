@@ -194,26 +194,29 @@ def make_frame(photo_path: Path) -> Image.Image:
 
 
 def make_frame_kb(photo_path: Path) -> Image.Image:
-    """Save photo at oversized dimensions (avail × KB_ZOOM_MAX) using fill/cover mode.
+    """Prepare an oversized source for Ken Burns frame rendering.
 
-    The source is larger than the display window so zoompan can zoom/pan within the
-    photo content itself.  Fill mode ensures the photo always covers the full source
-    (no letterbox gaps) so the photo fills the avail window at every zoom level.
-
-    At z=1.0 zoompan shows the full oversized source scaled down to avail_w × avail_h.
-    At z=KB_ZOOM_MAX zoompan shows only the central avail_w × avail_h crop at 1:1.
-    In both cases the photo fills the avail window — no background colour ever shows.
+    The source is sized at (fit_w * KB_ZOOM_MAX) × (fit_h * KB_ZOOM_MAX), where fit_w/fit_h
+    are the photo dimensions when fitted (letterboxed) into the avail window — the same
+    calculation as make_frame.  This preserves the photo's aspect ratio for both portrait
+    and landscape photos.
     """
     avail_w, avail_h, _, _ = _avail_dims()
-    src_w = int(avail_w * KB_ZOOM_MAX)
-    src_h = int(avail_h * KB_ZOOM_MAX)
     photo = load_photo(photo_path)
 
-    # Fill (cover) mode: scale so the photo covers src_w × src_h entirely, then
-    # centre-crop — no letterbox gaps in the source.
+    # Fit the photo within the avail window (same as make_frame — min ratio)
+    fit_ratio = min(avail_w / photo.width, avail_h / photo.height)
+    fit_w = round(photo.width * fit_ratio)
+    fit_h = round(photo.height * fit_ratio)
+
+    # Oversized source: same aspect ratio as fit, scaled up by KB_ZOOM_MAX
+    src_w = round(fit_w * KB_ZOOM_MAX)
+    src_h = round(fit_h * KB_ZOOM_MAX)
+
+    # Scale photo to fill src_w × src_h; same aspect so max == min, no actual crop
     ratio = max(src_w / photo.width, src_h / photo.height)
-    scaled_w = int(photo.width * ratio)
-    scaled_h = int(photo.height * ratio)
+    scaled_w = round(photo.width * ratio)
+    scaled_h = round(photo.height * ratio)
     photo = photo.resize((scaled_w, scaled_h), Image.LANCZOS)
 
     x_off = (scaled_w - src_w) // 2
@@ -280,6 +283,9 @@ def make_ken_burns_frames(source_path: Path, slide_index: int,
 
     source       = Image.open(source_path).convert("RGB")
     src_w, src_h = source.size
+    # Reverse the KB_ZOOM_MAX scale to get the natural display (fit) dimensions
+    fit_w = round(src_w / KB_ZOOM_MAX)
+    fit_h = round(src_h / KB_ZOOM_MAX)
 
     d         = int(SLIDE_SECS * FPS)
     excursion = KB_ZOOM_MAX - 1.0
@@ -327,10 +333,14 @@ def make_ken_burns_frames(source_path: Path, slide_index: int,
         y1 = max(0, min(y1, src_h - crop_h))
 
         crop        = source.crop((x1, y1, x1 + crop_w, y1 + crop_h))
-        photo_frame = crop.resize((avail_w, avail_h), Image.LANCZOS)
+        photo_frame = crop.resize((fit_w, fit_h), Image.LANCZOS)
 
+        # Centre the photo window within the avail area (portrait photos get side-matt;
+        # landscape photos have zero offset and behave identically to before)
+        paste_x = pad_x + (avail_w - fit_w) // 2
+        paste_y = pad_y + (avail_h - fit_h) // 2
         frame = Image.new("RGB", (FRAME_W, FRAME_H), MATT_COLOUR)
-        frame.paste(photo_frame, (pad_x, pad_y))
+        frame.paste(photo_frame, (paste_x, paste_y))
         frame.save(tmpdir / f"slide_{slide_num:04d}_f{f:04d}.jpg", "JPEG", quality=92)
 
     return tmpdir / f"slide_{slide_num:04d}_f%04d.jpg"
