@@ -108,7 +108,7 @@ FPS          = 30
 SORT_BY      = "date"              # "date" = EXIF creation date; "filename" = alphabetical
 AUDIO_FILES  = []                  # list of MP3 paths — leave empty for silent video
 KEN_BURNS    = True                # slow pan-and-zoom on each slide
-KB_ZOOM_MAX  = 1.20                # max zoom factor (1.0 = none, 1.20 = 20%)
+KB_ZOOM_MAX  = 1.08                # max zoom factor (1.0 = none, 1.08 = 8%)
 KB_STYLE     = "auto"              # "zoom_in" | "zoom_out" | "pan_lr" | "pan_rl" | "auto"
 KB_FACE_DETECT = True              # pan toward detected faces when True
 # ───────────────────────────────────────────────────────────────────────────────
@@ -502,8 +502,8 @@ if __name__ == "__main__":
 | "No music / silent video" | `AUDIO_FILES = []` |
 | "No Ken Burns / static slides" | `KEN_BURNS = False` |
 | "Only zoom in on every slide" | `KB_STYLE = "zoom_in"` |
-| "Gentler zoom" | `KB_ZOOM_MAX = 1.10` |
-| "More dramatic zoom" | `KB_ZOOM_MAX = 1.35` |
+| "Gentler zoom" | `KB_ZOOM_MAX = 1.04` |
+| "More dramatic zoom" | `KB_ZOOM_MAX = 1.25` |
 | "Disable face detection" | `KB_FACE_DETECT = False` |
 
 ## Common issues
@@ -524,7 +524,7 @@ if __name__ == "__main__":
 
 **Unsupported audio format** — The skill expects MP3. For AAC, WAV, or FLAC files, either ask the user to convert to MP3 first, or adjust the AUDIO_FILES entries accordingly (FFmpeg can decode most formats without code changes).
 
-**Ken Burns shows a black border flash** — Means the zoom dropped below 1.0, exposing the canvas edge. Ensure `KB_ZOOM_MAX >= 1.0`. The default 1.20 with `"auto"` style will not trigger this.
+**Ken Burns shows a black border flash** — Means the zoom dropped below 1.0, exposing the canvas edge. Ensure `KB_ZOOM_MAX >= 1.0`. The default 1.08 with `"auto"` style will not trigger this.
 
 **Face detection not working** — Face detection requires `opencv-python-headless`. Re-run the pip install step to confirm it installed. Detection runs on a 960px-wide downscale of each slide (~50ms per photo). Set `KB_FACE_DETECT = False` to disable it entirely.
 
