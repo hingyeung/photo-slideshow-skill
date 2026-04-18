@@ -125,6 +125,13 @@ def get_photo_date(path: Path):
             return datetime.strptime(date_str, "%Y:%m:%d %H:%M:%S")
     except Exception:
         pass
+    # Fall back to file system date (st_birthtime on macOS, st_mtime elsewhere)
+    try:
+        st = path.stat()
+        ts = getattr(st, "st_birthtime", None) or st.st_mtime
+        return datetime.fromtimestamp(ts)
+    except Exception:
+        pass
     return None
 
 
@@ -147,11 +154,11 @@ def get_photos(directory: str) -> list[Path]:
             undated.append(p)
 
     dated.sort(key=lambda x: x[0])
-    undated.sort(key=lambda x: x.name)
+    undated.sort(key=lambda p: p[1].name)
 
     if undated:
-        print(f"  {len(undated)} photo(s) have no EXIF creation date and will appear at the end:")
-        for p in undated:
+        print(f"  {len(undated)} photo(s) have no date metadata and will appear at the end:")
+        for _, p in undated:
             print(f"    - {p.name}")
 
     return [p for _, p in dated] + undated
@@ -264,24 +271,35 @@ def make_ken_burns_frames(source_path: Path, slide_index: int,
         crop_w = round(src_w / zoom)
         crop_h = round(src_h / zoom)
 
-        if style in ("zoom_in", "zoom_out"):
-            cx, cy = src_w / 2, src_h / 2
-        elif subject_point is not None:
+        if subject_point is not None:
             fx, fy = subject_point
-            cx_min, cx_max = crop_w / 2.0, src_w - crop_w / 2.0
-            cy_min, cy_max = crop_h / 2.0, src_h - crop_h / 2.0
-            target_cx = max(cx_min, min(cx_max, fx * src_w))
-            target_cy = max(cy_min, min(cy_max, fy * src_h))
-            cx = src_w / 2 + (target_cx - src_w / 2) * t_eased
-            cy = src_h / 2 + (target_cy - src_h / 2) * t_eased
+            face_cx = fx * src_w
+            face_cy = fy * src_h
+            if style == "zoom_in":
+                # Lead viewer's eye from image centre toward the face as we zoom in
+                cx = src_w / 2 + (face_cx - src_w / 2) * t_eased
+                cy = src_h / 2 + (face_cy - src_h / 2) * t_eased
+            elif style == "zoom_out":
+                # Reveal outward from the face toward the full scene
+                cx = face_cx + (src_w / 2 - face_cx) * t_eased
+                cy = face_cy + (src_h / 2 - face_cy) * t_eased
+            else:  # pan_lr / pan_rl — pan toward face
+                cx_min, cx_max = crop_w / 2.0, src_w - crop_w / 2.0
+                cy_min, cy_max = crop_h / 2.0, src_h - crop_h / 2.0
+                target_cx = max(cx_min, min(cx_max, face_cx))
+                target_cy = max(cy_min, min(cy_max, face_cy))
+                cx = src_w / 2 + (target_cx - src_w / 2) * t_eased
+                cy = src_h / 2 + (target_cy - src_h / 2) * t_eased
         elif style == "pan_lr":
             drift = (src_w - crop_w) * 0.4
             cx    = src_w / 2 - drift / 2 + drift * t_eased
             cy    = src_h / 2
-        else:
+        elif style == "pan_rl":
             drift = (src_w - crop_w) * 0.4
             cx    = src_w / 2 + drift / 2 - drift * t_eased
             cy    = src_h / 2
+        else:  # zoom_in / zoom_out, no face detected
+            cx, cy = src_w / 2, src_h / 2
 
         x1 = round(cx - crop_w / 2)
         y1 = round(cy - crop_h / 2)
